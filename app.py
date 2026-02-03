@@ -502,8 +502,20 @@ def main():
 
                         st.markdown("---")
 
+                        # Score selection
+                        st.subheader("📊 Select Scores to Include")
+                        score_options = st.multiselect(
+                            "Choose which scores to include in the output:",
+                            options=["Accuracy", "Recall", "Precision"],
+                            default=["Accuracy", "Recall", "Precision"],
+                            help="Select one or more scores to evaluate and include in the CSV output"
+                        )
+
+                        if not score_options:
+                            st.warning("⚠️ Please select at least one score type")
+
                         # Run evaluation button
-                        if st.button("🚀 Run Evaluation", type="primary", use_container_width=True):
+                        if score_options and st.button("🚀 Run Evaluation", type="primary", use_container_width=True):
 
                             progress_bar = st.progress(0)
                             status_text = st.empty()
@@ -531,23 +543,41 @@ def main():
                                 )
 
                                 if result:
-                                    results.append({
+                                    row_data = {
                                         'Question Number': row['Question Number'],
                                         'Question': row['Question'],
-                                        'Precision_Score': result['precision'],
-                                        'Precision_Reasoning': result['precision_reasoning'],
-                                        'RAG_Answer': row['RAG Answer'],
-                                        'Ground_Truth': row['Ground Truth answer']
-                                    })
+                                    }
+                                    # Add selected scores
+                                    if "Accuracy" in score_options:
+                                        row_data['Accuracy_Score'] = result['accuracy']
+                                        row_data['Accuracy_Reasoning'] = result['accuracy_reasoning']
+                                    if "Recall" in score_options:
+                                        row_data['Recall_Score'] = result['recall']
+                                        row_data['Recall_Reasoning'] = result['recall_reasoning']
+                                    if "Precision" in score_options:
+                                        row_data['Precision_Score'] = result['precision']
+                                        row_data['Precision_Reasoning'] = result['precision_reasoning']
+                                    # Add answers
+                                    row_data['RAG_Answer'] = row['RAG Answer']
+                                    row_data['Ground_Truth'] = row['Ground Truth answer']
+                                    results.append(row_data)
                                 else:
-                                    results.append({
+                                    row_data = {
                                         'Question Number': row['Question Number'],
                                         'Question': row['Question'],
-                                        'Precision_Score': 'ERROR',
-                                        'Precision_Reasoning': 'Failed to evaluate',
-                                        'RAG_Answer': row['RAG Answer'],
-                                        'Ground_Truth': row['Ground Truth answer']
-                                    })
+                                    }
+                                    if "Accuracy" in score_options:
+                                        row_data['Accuracy_Score'] = 'ERROR'
+                                        row_data['Accuracy_Reasoning'] = 'Failed to evaluate'
+                                    if "Recall" in score_options:
+                                        row_data['Recall_Score'] = 'ERROR'
+                                        row_data['Recall_Reasoning'] = 'Failed to evaluate'
+                                    if "Precision" in score_options:
+                                        row_data['Precision_Score'] = 'ERROR'
+                                        row_data['Precision_Reasoning'] = 'Failed to evaluate'
+                                    row_data['RAG_Answer'] = row['RAG Answer']
+                                    row_data['Ground_Truth'] = row['Ground Truth answer']
+                                    results.append(row_data)
 
                                 time.sleep(0.5)  # Rate limiting
 
@@ -561,22 +591,39 @@ def main():
                             st.subheader("📈 Results")
 
                             # Summary metrics
-                            valid_scores = [r['Precision_Score'] for r in results if r['Precision_Score'] != 'ERROR']
-                            if valid_scores:
-                                col1, col2, col3 = st.columns(3)
-                                col1.metric("Total Evaluated", len(valid_scores))
-                                col2.metric("Average Precision", f"{sum(valid_scores)/len(valid_scores):.2%}")
-                                col3.metric("Errors", len(results) - len(valid_scores))
+                            st.subheader("📊 Summary")
+
+                            # Count errors
+                            error_count = 0
+                            for r in results:
+                                if any(r.get(f'{s}_Score') == 'ERROR' for s in score_options):
+                                    error_count += 1
+
+                            # Calculate averages for each selected score
+                            metrics_cols = st.columns(len(score_options) + 2)
+                            metrics_cols[0].metric("Total Evaluated", len(results))
+
+                            col_idx = 1
+                            for score_type in score_options:
+                                score_key = f'{score_type}_Score'
+                                valid_scores = [r[score_key] for r in results if r.get(score_key) != 'ERROR' and r.get(score_key) is not None]
+                                if valid_scores:
+                                    avg = sum(valid_scores) / len(valid_scores)
+                                    metrics_cols[col_idx].metric(f"Avg {score_type}", f"{avg:.2%}")
+                                col_idx += 1
+
+                            metrics_cols[col_idx].metric("Errors", error_count)
 
                             st.dataframe(results_df, use_container_width=True)
 
                             # Download button
                             csv = results_df.to_csv(index=False)
                             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            score_suffix = "_".join([s.lower() for s in score_options])
                             st.download_button(
                                 label="📥 Download Results CSV",
                                 data=csv,
-                                file_name=f"precision_scores_{timestamp}.csv",
+                                file_name=f"evaluation_{score_suffix}_{timestamp}.csv",
                                 mime="text/csv",
                                 use_container_width=True
                             )
