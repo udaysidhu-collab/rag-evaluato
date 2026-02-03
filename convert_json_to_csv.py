@@ -18,6 +18,52 @@ from pathlib import Path
 from difflib import SequenceMatcher
 
 
+# Column name variants for flexible matching
+COLUMN_VARIANTS = {
+    'id': ['question number', 'number', 'id', 'question_id', 'questionnumber', 'q_number', '#', 'qid', 'q_id'],
+    'question': ['question', 'query', 'question text', 'questiontext', 'q', 'question_text'],
+}
+
+# Partial match keywords (if column contains any of these)
+PARTIAL_MATCH_KEYWORDS = {
+    'question': ['question', 'query'],
+    'id': ['number', 'id', '#']
+}
+
+
+def find_column(fieldnames, column_type):
+    """
+    Find a column matching the given type using flexible matching.
+
+    Args:
+        fieldnames: List of column names from CSV
+        column_type: One of 'id', 'question'
+
+    Returns:
+        Matched column name or None
+    """
+    if not fieldnames:
+        return None
+
+    variants = COLUMN_VARIANTS.get(column_type, [])
+    keywords = PARTIAL_MATCH_KEYWORDS.get(column_type, [])
+
+    # First: Try exact match (case-insensitive)
+    for col in fieldnames:
+        col_lower = col.lower().strip()
+        if col_lower in variants:
+            return col
+
+    # Second: Try partial match (column contains keyword)
+    for col in fieldnames:
+        col_lower = col.lower().strip()
+        for keyword in keywords:
+            if keyword in col_lower:
+                return col
+
+    return None
+
+
 def normalize_text(text):
     """
     Normalize text for better matching.
@@ -43,56 +89,54 @@ def calculate_similarity(text1, text2):
 
 def load_questions_csv(questions_file='questions.csv'):
     """
-    Load questions from CSV file.
-    
+    Load questions from CSV file with flexible column name detection.
+
     Returns:
     - dict: {question_text: question_number}
     """
     questions = {}
-    
+
     if not os.path.exists(questions_file):
         print(f"❌ Error: {questions_file} not found!")
         print("Make sure questions.csv is in the same folder as this script.")
         return None
-    
+
     try:
         with open(questions_file, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            
-            # Try different possible column names
-            possible_id_cols = ['Question Number', 'ID', 'Question_Number', 'QuestionNumber']
-            possible_text_cols = ['Question', 'Question Text', 'QuestionText', 'Text']
-            
-            # Find which columns exist
-            id_col = None
-            text_col = None
-            
-            for col in possible_id_cols:
-                if col in reader.fieldnames:
-                    id_col = col
-                    break
-            
-            for col in possible_text_cols:
-                if col in reader.fieldnames:
-                    text_col = col
-                    break
-            
-            if not id_col or not text_col:
-                print(f"❌ Error: Could not find required columns in {questions_file}")
-                print(f"Found columns: {reader.fieldnames}")
+            fieldnames = reader.fieldnames
+
+            if not fieldnames:
+                print(f"❌ Error: {questions_file} appears to be empty or has no headers")
                 return None
-            
-            print(f"✅ Using columns: '{id_col}' and '{text_col}'")
-            
+
+            # Use flexible column detection
+            id_col = find_column(fieldnames, 'id')
+            text_col = find_column(fieldnames, 'question')
+
+            if not id_col:
+                print(f"❌ Error: Could not find ID/Number column in {questions_file}")
+                print(f"   Found columns: {fieldnames}")
+                print(f"   Expected one of: {COLUMN_VARIANTS['id']}")
+                return None
+
+            if not text_col:
+                print(f"❌ Error: Could not find Question column in {questions_file}")
+                print(f"   Found columns: {fieldnames}")
+                print(f"   Expected one of: {COLUMN_VARIANTS['question']}")
+                return None
+
+            print(f"✅ Detected columns: '{id_col}' (ID) and '{text_col}' (Question)")
+
             for row in reader:
                 question_num = row[id_col].strip()
                 question_text = row[text_col].strip()
                 if question_num and question_text:
                     questions[question_text] = question_num
-        
+
         print(f"✅ Loaded {len(questions)} questions from {questions_file}")
         return questions
-    
+
     except Exception as e:
         print(f"❌ Error reading {questions_file}: {e}")
         return None

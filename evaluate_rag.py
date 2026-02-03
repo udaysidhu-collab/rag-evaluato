@@ -99,26 +99,103 @@ If you understand these rules, respond with:
 """
 
 
-def load_csv(filepath, expected_columns):
-    """Load CSV file and validate columns."""
+# Column name variants for flexible matching
+COLUMN_VARIANTS = {
+    'id': ['question number', 'number', 'id', 'question_id', 'questionnumber', 'q_number', '#', 'qid', 'q_id'],
+    'question': ['question', 'query', 'question text', 'questiontext', 'q', 'question_text'],
+    'ground_truth': ['ground truth answer', 'ground truth', 'groundtruth', 'expected answer', 'reference', 'truth', 'expected', 'ground_truth', 'groundtruthanswer'],
+    'rag_answer': ['rag answer', 'answer', 'response', 'output', 'model answer', 'tellius kaiya answer', 'rag_answer', 'raganswer', 'model_answer']
+}
+
+# Partial match keywords (if column contains any of these)
+PARTIAL_MATCH_KEYWORDS = {
+    'rag_answer': ['kaiya', 'answer', 'response', 'output'],
+    'ground_truth': ['truth', 'expected', 'reference'],
+    'question': ['question', 'query'],
+    'id': ['number', 'id', '#']
+}
+
+
+def find_column(fieldnames, column_type):
+    """
+    Find a column matching the given type using flexible matching.
+
+    Args:
+        fieldnames: List of column names from CSV
+        column_type: One of 'id', 'question', 'ground_truth', 'rag_answer'
+
+    Returns:
+        Matched column name or None
+    """
+    if not fieldnames:
+        return None
+
+    variants = COLUMN_VARIANTS.get(column_type, [])
+    keywords = PARTIAL_MATCH_KEYWORDS.get(column_type, [])
+
+    # First: Try exact match (case-insensitive)
+    for col in fieldnames:
+        col_lower = col.lower().strip()
+        if col_lower in variants:
+            return col
+
+    # Second: Try partial match (column contains keyword)
+    for col in fieldnames:
+        col_lower = col.lower().strip()
+        for keyword in keywords:
+            if keyword in col_lower:
+                return col
+
+    return None
+
+
+def load_csv_flexible(filepath, id_type='id', value_type='question'):
+    """
+    Load CSV file with flexible column name detection.
+
+    Args:
+        filepath: Path to CSV file
+        id_type: Type of ID column ('id')
+        value_type: Type of value column ('question', 'ground_truth', or 'rag_answer')
+
+    Returns:
+        Tuple of (data_dict, id_column_name, value_column_name)
+    """
     data = {}
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            
-            # Check if expected columns exist
-            if not all(col in reader.fieldnames for col in expected_columns):
-                print(f"❌ Error: {filepath} must have columns: {expected_columns}")
-                print(f"   Found columns: {reader.fieldnames}")
+            fieldnames = reader.fieldnames
+
+            if not fieldnames:
+                print(f"❌ Error: {filepath} appears to be empty or has no headers")
                 sys.exit(1)
-            
+
+            # Find matching columns
+            id_col = find_column(fieldnames, id_type)
+            value_col = find_column(fieldnames, value_type)
+
+            if not id_col:
+                print(f"❌ Error: Could not find ID/Number column in {filepath}")
+                print(f"   Found columns: {fieldnames}")
+                print(f"   Expected one of: {COLUMN_VARIANTS[id_type]}")
+                sys.exit(1)
+
+            if not value_col:
+                print(f"❌ Error: Could not find {value_type} column in {filepath}")
+                print(f"   Found columns: {fieldnames}")
+                print(f"   Expected one of: {COLUMN_VARIANTS[value_type]}")
+                sys.exit(1)
+
+            # Read data
             for row in reader:
-                question_num = row[expected_columns[0]].strip()
-                text = row[expected_columns[1]].strip()
+                question_num = row[id_col].strip()
+                text = row[value_col].strip()
                 if question_num and text:
                     data[question_num] = text
-        
-        return data
+
+        return data, id_col, value_col
+
     except FileNotFoundError:
         print(f"❌ Error: {filepath} not found")
         sys.exit(1)
@@ -225,15 +302,28 @@ def evaluate_answer(question_num, question, ground_truth, rag_answer, base_messa
 
 def main():
     print("Loading CSV files...")
-    
+    print("-" * 60)
+
     # Load all three CSV files with flexible column names
-    questions = load_csv('data sources/questions.csv', ['Question Number', 'Question'])
-    ground_truths = load_csv('data sources/ground_truth.csv', ['Question Number', 'Ground Truth answer'])
-    rag_answers = load_csv('data sources/rag_answers.csv', ['Question Number', 'RAG Answer'])
-    
-    print(f"✅ Found {len(questions)} questions")
-    print(f"✅ Found {len(rag_answers)} RAG answers")
-    print(f"✅ Found {len(ground_truths)} ground truth answers")
+    questions, q_id_col, q_text_col = load_csv_flexible(
+        'data sources/questions.csv', 'id', 'question'
+    )
+    print(f"✅ questions.csv: Using '{q_id_col}' as ID, '{q_text_col}' as Question")
+    print(f"   Found {len(questions)} questions")
+
+    ground_truths, gt_id_col, gt_text_col = load_csv_flexible(
+        'data sources/ground_truth.csv', 'id', 'ground_truth'
+    )
+    print(f"✅ ground_truth.csv: Using '{gt_id_col}' as ID, '{gt_text_col}' as Ground Truth")
+    print(f"   Found {len(ground_truths)} ground truth answers")
+
+    rag_answers, rag_id_col, rag_text_col = load_csv_flexible(
+        'data sources/rag_answers.csv', 'id', 'rag_answer'
+    )
+    print(f"✅ rag_answers.csv: Using '{rag_id_col}' as ID, '{rag_text_col}' as RAG Answer")
+    print(f"   Found {len(rag_answers)} RAG answers")
+
+    print("-" * 60)
     
     # Find common question numbers
     common_ids = set(questions.keys()) & set(ground_truths.keys()) & set(rag_answers.keys())

@@ -97,6 +97,49 @@ def get_evaluation_prompt():
     return st.session_state.evaluation_prompt
 
 
+# ===== Column Detection =====
+
+# Column name variants for flexible matching
+COLUMN_VARIANTS = {
+    'id': ['question number', 'number', 'id', 'question_id', 'questionnumber', 'q_number', '#', 'qid', 'q_id'],
+    'question': ['question', 'query', 'question text', 'questiontext', 'q', 'question_text'],
+    'ground_truth': ['ground truth answer', 'ground truth', 'groundtruth', 'expected answer', 'reference', 'truth', 'expected', 'ground_truth', 'groundtruthanswer'],
+    'rag_answer': ['rag answer', 'answer', 'response', 'output', 'model answer', 'tellius kaiya answer', 'rag_answer', 'raganswer', 'model_answer']
+}
+
+# Partial match keywords (if column contains any of these)
+PARTIAL_MATCH_KEYWORDS = {
+    'rag_answer': ['kaiya', 'answer', 'response', 'output'],
+    'ground_truth': ['truth', 'expected', 'reference'],
+    'question': ['question', 'query'],
+    'id': ['number', 'id', '#']
+}
+
+
+def find_column(columns, column_type):
+    """Find a column matching the given type using flexible matching."""
+    if not columns:
+        return None
+
+    variants = COLUMN_VARIANTS.get(column_type, [])
+    keywords = PARTIAL_MATCH_KEYWORDS.get(column_type, [])
+
+    # First: Try exact match (case-insensitive)
+    for col in columns:
+        col_lower = col.lower().strip()
+        if col_lower in variants:
+            return col
+
+    # Second: Try partial match (column contains keyword)
+    for col in columns:
+        col_lower = col.lower().strip()
+        for keyword in keywords:
+            if keyword in col_lower:
+                return col
+
+    return None
+
+
 # ===== JSON Conversion Functions (from convert_json_to_csv.py) =====
 
 def normalize_text(text):
@@ -155,13 +198,13 @@ def find_best_match(json_question, reference_questions, threshold=0.85):
         return None, best_score, best_question_text
 
 
-def convert_json_files_to_df(json_files, questions_df, threshold=0.85):
+def convert_json_files_to_df(json_files, questions_df, threshold=0.85, id_col='Question Number', q_col='Question'):
     """Convert uploaded JSON files to a DataFrame with RAG answers."""
     # Build reference questions dict
     reference_questions = {}
     for _, row in questions_df.iterrows():
-        q_num = str(row['Question Number']).strip()
-        q_text = str(row['Question']).strip()
+        q_num = str(row[id_col]).strip()
+        q_text = str(row[q_col]).strip()
         if q_num and q_text:
             reference_questions[q_text] = q_num
 
@@ -390,14 +433,25 @@ def main():
 
                 st.write(f"**JSON Files:** {len(json_files)} files uploaded")
 
-                # Validate columns
-                q_valid = 'Question Number' in q_df.columns and 'Question' in q_df.columns
-                gt_valid = 'Question Number' in gt_df.columns and 'Ground Truth answer' in gt_df.columns
+                # Flexible column detection
+                q_id_col = find_column(q_df.columns, 'id')
+                q_text_col = find_column(q_df.columns, 'question')
+                gt_id_col = find_column(gt_df.columns, 'id')
+                gt_text_col = find_column(gt_df.columns, 'ground_truth')
 
-                if not q_valid:
-                    st.error("❌ Questions CSV must have columns: `Question Number`, `Question`")
-                if not gt_valid:
-                    st.error("❌ Ground Truth CSV must have columns: `Question Number`, `Ground Truth answer`")
+                # Validate columns
+                q_valid = q_id_col is not None and q_text_col is not None
+                gt_valid = gt_id_col is not None and gt_text_col is not None
+
+                if q_valid:
+                    st.success(f"✅ Questions: Using '{q_id_col}' (ID), '{q_text_col}' (Question)")
+                else:
+                    st.error(f"❌ Questions CSV: Could not find ID or Question column. Found: {list(q_df.columns)}")
+
+                if gt_valid:
+                    st.success(f"✅ Ground Truth: Using '{gt_id_col}' (ID), '{gt_text_col}' (Ground Truth)")
+                else:
+                    st.error(f"❌ Ground Truth CSV: Could not find ID or Ground Truth column. Found: {list(gt_df.columns)}")
 
                 if q_valid and gt_valid:
                     # Convert JSON files to DataFrame
@@ -405,7 +459,9 @@ def main():
                     st.subheader("🔄 JSON Conversion")
 
                     with st.spinner("Converting JSON files..."):
-                        rag_df, failed, low_confidence = convert_json_files_to_df(json_files, q_df, threshold)
+                        rag_df, failed, low_confidence = convert_json_files_to_df(
+                            json_files, q_df, threshold, id_col=q_id_col, q_col=q_text_col
+                        )
 
                     if len(rag_df) > 0:
                         st.success(f"✅ Successfully matched {len(rag_df)} JSON files")
@@ -424,10 +480,14 @@ def main():
                         st.write("**Converted RAG Answers:**")
                         st.dataframe(rag_df[['Question Number', 'RAG Answer', 'similarity']].head(), use_container_width=True)
 
+                        # Rename columns for merging
+                        q_df_renamed = q_df[[q_id_col, q_text_col]].rename(columns={q_id_col: 'Question Number', q_text_col: 'Question'})
+                        gt_df_renamed = gt_df[[gt_id_col, gt_text_col]].rename(columns={gt_id_col: 'Question Number', gt_text_col: 'Ground Truth answer'})
+
                         # Merge all data
                         merged = pd.merge(
-                            q_df[['Question Number', 'Question']],
-                            gt_df[['Question Number', 'Ground Truth answer']],
+                            q_df_renamed,
+                            gt_df_renamed,
                             on='Question Number',
                             how='inner'
                         )
