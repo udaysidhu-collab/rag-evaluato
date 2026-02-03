@@ -17,8 +17,8 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Evaluation system prompt (same as evaluate_rag.py)
-EVALUATION_PROMPT = """You are an evaluation assistant. For every message I send that contains this format:
+# Default evaluation system prompt (same as evaluate_rag.py)
+DEFAULT_EVALUATION_PROMPT = """You are an evaluation assistant. For every message I send that contains this format:
 <first-few lines of text> ← Answer A (Ground Truth) *NOTE, this could be a few lines, but usually is contained within "" or quotations
 (blank lines)
 <final-line text> ← Answer B (Model Output)
@@ -88,6 +88,13 @@ CONFIRMATION
 If you understand these rules, respond with:
 "Evaluationmodeactivated."
 """
+
+
+def get_evaluation_prompt():
+    """Get the current evaluation prompt from session state or default."""
+    if 'evaluation_prompt' not in st.session_state:
+        st.session_state.evaluation_prompt = DEFAULT_EVALUATION_PROMPT
+    return st.session_state.evaluation_prompt
 
 
 # ===== JSON Conversion Functions (from convert_json_to_csv.py) =====
@@ -242,7 +249,7 @@ def initialize_evaluation_mode(client):
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=100,
-            system=EVALUATION_PROMPT,
+            system=get_evaluation_prompt(),
             messages=[{"role": "user", "content": "ready"}]
         )
         confirmation = response.content[0].text.strip()
@@ -264,7 +271,7 @@ def evaluate_single(client, ground_truth, rag_answer, base_messages):
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=2000,
-            system=EVALUATION_PROMPT,
+            system=get_evaluation_prompt(),
             messages=messages
         )
         return parse_evaluation_response(response.content[0].text)
@@ -277,7 +284,6 @@ def main():
     st.set_page_config(page_title="RAG Evaluator", page_icon="📊", layout="wide")
 
     st.title("📊 RAG Evaluator")
-    st.markdown("Upload your Questions CSV, Ground Truth CSV, and RAG JSON files to evaluate precision, recall, and accuracy.")
 
     # Check for API key
     client = initialize_client()
@@ -287,183 +293,238 @@ def main():
 
     st.success("✅ API key loaded")
 
-    # File upload section
-    col1, col2, col3 = st.columns(3)
+    # Create tabs
+    tab1, tab2 = st.tabs(["📊 Evaluation", "⚙️ Prompt Settings"])
 
-    with col1:
-        st.subheader("Questions CSV")
-        st.caption("Required columns: `Question Number`, `Question`")
-        questions_file = st.file_uploader("Upload Questions", type=['csv'], key='q')
+    # ===== TAB 2: Prompt Settings =====
+    with tab2:
+        st.header("Evaluation Prompt Settings")
+        st.markdown("Customize the evaluation prompt used by Claude to score RAG answers.")
 
-    with col2:
-        st.subheader("Ground Truth CSV")
-        st.caption("Required columns: `Question Number`, `Ground Truth answer`")
-        ground_truth_file = st.file_uploader("Upload Ground Truth", type=['csv'], key='gt')
+        # Initialize session state if needed
+        if 'evaluation_prompt' not in st.session_state:
+            st.session_state.evaluation_prompt = DEFAULT_EVALUATION_PROMPT
 
-    with col3:
-        st.subheader("RAG JSON Files")
-        st.caption("Upload JSON files from your RAG system")
-        json_files = st.file_uploader("Upload JSON Files", type=['json'], key='json', accept_multiple_files=True)
+        # Text area for editing the prompt
+        edited_prompt = st.text_area(
+            "Evaluation Prompt",
+            value=st.session_state.evaluation_prompt,
+            height=500,
+            help="Edit the system prompt used for evaluation. Changes are saved automatically."
+        )
 
-    # Similarity threshold slider
-    threshold = st.slider("Matching Threshold", min_value=0.5, max_value=1.0, value=0.85, step=0.05,
-                         help="Minimum similarity score for matching questions (85% recommended)")
+        # Update session state when edited
+        if edited_prompt != st.session_state.evaluation_prompt:
+            st.session_state.evaluation_prompt = edited_prompt
+            st.success("✅ Prompt updated!")
 
-    # Preview uploaded files
-    if questions_file and ground_truth_file and json_files:
-        try:
-            q_df = pd.read_csv(questions_file)
-            gt_df = pd.read_csv(ground_truth_file)
+        col1, col2 = st.columns(2)
 
-            st.markdown("---")
-            st.subheader("📋 Data Preview")
+        with col1:
+            if st.button("🔄 Reset to Default", use_container_width=True):
+                st.session_state.evaluation_prompt = DEFAULT_EVALUATION_PROMPT
+                st.rerun()
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Questions:** {len(q_df)} rows")
-                st.dataframe(q_df.head(), use_container_width=True)
+        with col2:
+            # Show character count
+            st.metric("Character Count", len(st.session_state.evaluation_prompt))
 
-            with col2:
-                st.write(f"**Ground Truth:** {len(gt_df)} rows")
-                st.dataframe(gt_df.head(), use_container_width=True)
+        st.markdown("---")
+        st.subheader("📖 Prompt Guide")
+        st.markdown("""
+        **Key sections you can customize:**
 
-            st.write(f"**JSON Files:** {len(json_files)} files uploaded")
+        - **DEFINITIONS** - Change how Accuracy, Recall, and Precision are defined
+        - **CRITICAL PHILOSOPHY** - Adjust the scoring philosophy
+        - **FORMATTING INSTRUCTIONS** - Modify the expected output format
 
-            # Validate columns
-            q_valid = 'Question Number' in q_df.columns and 'Question' in q_df.columns
-            gt_valid = 'Question Number' in gt_df.columns and 'Ground Truth answer' in gt_df.columns
+        **Tips:**
+        - Keep the output format consistent (scores on separate lines, then reasoning)
+        - The confirmation response "Evaluationmodeactivated." helps verify the prompt was understood
+        - Test changes with a small batch before running full evaluations
+        """)
 
-            if not q_valid:
-                st.error("❌ Questions CSV must have columns: `Question Number`, `Question`")
-            if not gt_valid:
-                st.error("❌ Ground Truth CSV must have columns: `Question Number`, `Ground Truth answer`")
+    # ===== TAB 1: Evaluation =====
+    with tab1:
+        st.markdown("Upload your Questions CSV, Ground Truth CSV, and RAG JSON files to evaluate precision, recall, and accuracy.")
 
-            if q_valid and gt_valid:
-                # Convert JSON files to DataFrame
+        # File upload section
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.subheader("Questions CSV")
+            st.caption("Required columns: `Question Number`, `Question`")
+            questions_file = st.file_uploader("Upload Questions", type=['csv'], key='q')
+
+        with col2:
+            st.subheader("Ground Truth CSV")
+            st.caption("Required columns: `Question Number`, `Ground Truth answer`")
+            ground_truth_file = st.file_uploader("Upload Ground Truth", type=['csv'], key='gt')
+
+        with col3:
+            st.subheader("RAG JSON Files")
+            st.caption("Upload JSON files from your RAG system")
+            json_files = st.file_uploader("Upload JSON Files", type=['json'], key='json', accept_multiple_files=True)
+
+        # Similarity threshold slider
+        threshold = st.slider("Matching Threshold", min_value=0.5, max_value=1.0, value=0.85, step=0.05,
+                             help="Minimum similarity score for matching questions (85% recommended)")
+
+        # Preview uploaded files
+        if questions_file and ground_truth_file and json_files:
+            try:
+                q_df = pd.read_csv(questions_file)
+                gt_df = pd.read_csv(ground_truth_file)
+
                 st.markdown("---")
-                st.subheader("🔄 JSON Conversion")
+                st.subheader("📋 Data Preview")
 
-                with st.spinner("Converting JSON files..."):
-                    rag_df, failed, low_confidence = convert_json_files_to_df(json_files, q_df, threshold)
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Questions:** {len(q_df)} rows")
+                    st.dataframe(q_df.head(), use_container_width=True)
 
-                if len(rag_df) > 0:
-                    st.success(f"✅ Successfully matched {len(rag_df)} JSON files")
+                with col2:
+                    st.write(f"**Ground Truth:** {len(gt_df)} rows")
+                    st.dataframe(gt_df.head(), use_container_width=True)
 
-                    if failed:
-                        with st.expander(f"⚠️ {len(failed)} files failed to match"):
-                            for f in failed:
-                                st.write(f"- **{f['filename']}**: {f['reason']}")
+                st.write(f"**JSON Files:** {len(json_files)} files uploaded")
 
-                    if low_confidence:
-                        with st.expander(f"⚠️ {len(low_confidence)} matches with low confidence (<95%)"):
-                            for lc in low_confidence:
-                                st.write(f"- **{lc['filename']}** → Q{lc['question_num']} ({lc['similarity']*100:.1f}%)")
+                # Validate columns
+                q_valid = 'Question Number' in q_df.columns and 'Question' in q_df.columns
+                gt_valid = 'Question Number' in gt_df.columns and 'Ground Truth answer' in gt_df.columns
 
-                    # Show converted RAG answers
-                    st.write("**Converted RAG Answers:**")
-                    st.dataframe(rag_df[['Question Number', 'RAG Answer', 'similarity']].head(), use_container_width=True)
+                if not q_valid:
+                    st.error("❌ Questions CSV must have columns: `Question Number`, `Question`")
+                if not gt_valid:
+                    st.error("❌ Ground Truth CSV must have columns: `Question Number`, `Ground Truth answer`")
 
-                    # Merge all data
-                    merged = pd.merge(
-                        q_df[['Question Number', 'Question']],
-                        gt_df[['Question Number', 'Ground Truth answer']],
-                        on='Question Number',
-                        how='inner'
-                    )
-                    merged = pd.merge(
-                        merged,
-                        rag_df[['Question Number', 'RAG Answer']],
-                        on='Question Number',
-                        how='inner'
-                    )
-
-                    st.success(f"✅ Ready to evaluate {len(merged)} questions")
-
+                if q_valid and gt_valid:
+                    # Convert JSON files to DataFrame
                     st.markdown("---")
+                    st.subheader("🔄 JSON Conversion")
 
-                    # Run evaluation button
-                    if st.button("🚀 Run Evaluation", type="primary", use_container_width=True):
+                    with st.spinner("Converting JSON files..."):
+                        rag_df, failed, low_confidence = convert_json_files_to_df(json_files, q_df, threshold)
 
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
+                    if len(rag_df) > 0:
+                        st.success(f"✅ Successfully matched {len(rag_df)} JSON files")
 
-                        # Initialize evaluation mode
-                        status_text.text("Initializing evaluation mode...")
-                        base_messages = initialize_evaluation_mode(client)
+                        if failed:
+                            with st.expander(f"⚠️ {len(failed)} files failed to match"):
+                                for f in failed:
+                                    st.write(f"- **{f['filename']}**: {f['reason']}")
 
-                        if base_messages is None:
-                            st.error("Failed to initialize evaluation mode")
-                            return
+                        if low_confidence:
+                            with st.expander(f"⚠️ {len(low_confidence)} matches with low confidence (<95%)"):
+                                for lc in low_confidence:
+                                    st.write(f"- **{lc['filename']}** → Q{lc['question_num']} ({lc['similarity']*100:.1f}%)")
 
-                        results = []
+                        # Show converted RAG answers
+                        st.write("**Converted RAG Answers:**")
+                        st.dataframe(rag_df[['Question Number', 'RAG Answer', 'similarity']].head(), use_container_width=True)
 
-                        for idx, row in merged.iterrows():
-                            progress = (idx + 1) / len(merged)
-                            progress_bar.progress(progress)
-                            status_text.text(f"Evaluating question {idx + 1} of {len(merged)}...")
+                        # Merge all data
+                        merged = pd.merge(
+                            q_df[['Question Number', 'Question']],
+                            gt_df[['Question Number', 'Ground Truth answer']],
+                            on='Question Number',
+                            how='inner'
+                        )
+                        merged = pd.merge(
+                            merged,
+                            rag_df[['Question Number', 'RAG Answer']],
+                            on='Question Number',
+                            how='inner'
+                        )
 
-                            result = evaluate_single(
-                                client,
-                                row['Ground Truth answer'],
-                                row['RAG Answer'],
-                                base_messages
-                            )
-
-                            if result:
-                                results.append({
-                                    'Question Number': row['Question Number'],
-                                    'Question': row['Question'],
-                                    'Precision_Score': result['precision'],
-                                    'Precision_Reasoning': result['precision_reasoning'],
-                                    'RAG_Answer': row['RAG Answer'],
-                                    'Ground_Truth': row['Ground Truth answer']
-                                })
-                            else:
-                                results.append({
-                                    'Question Number': row['Question Number'],
-                                    'Question': row['Question'],
-                                    'Precision_Score': 'ERROR',
-                                    'Precision_Reasoning': 'Failed to evaluate',
-                                    'RAG_Answer': row['RAG Answer'],
-                                    'Ground_Truth': row['Ground Truth answer']
-                                })
-
-                            time.sleep(0.5)  # Rate limiting
-
-                        progress_bar.progress(1.0)
-                        status_text.text("Evaluation complete!")
-
-                        # Display results
-                        results_df = pd.DataFrame(results)
+                        st.success(f"✅ Ready to evaluate {len(merged)} questions")
 
                         st.markdown("---")
-                        st.subheader("📈 Results")
 
-                        # Summary metrics
-                        valid_scores = [r['Precision_Score'] for r in results if r['Precision_Score'] != 'ERROR']
-                        if valid_scores:
-                            col1, col2, col3 = st.columns(3)
-                            col1.metric("Total Evaluated", len(valid_scores))
-                            col2.metric("Average Precision", f"{sum(valid_scores)/len(valid_scores):.2%}")
-                            col3.metric("Errors", len(results) - len(valid_scores))
+                        # Run evaluation button
+                        if st.button("🚀 Run Evaluation", type="primary", use_container_width=True):
 
-                        st.dataframe(results_df, use_container_width=True)
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
 
-                        # Download button
-                        csv = results_df.to_csv(index=False)
-                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                        st.download_button(
-                            label="📥 Download Results CSV",
-                            data=csv,
-                            file_name=f"precision_scores_{timestamp}.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                else:
-                    st.error("❌ No JSON files could be matched to questions. Check the matching threshold or file format.")
+                            # Initialize evaluation mode
+                            status_text.text("Initializing evaluation mode...")
+                            base_messages = initialize_evaluation_mode(client)
 
-        except Exception as e:
-            st.error(f"Error: {e}")
+                            if base_messages is None:
+                                st.error("Failed to initialize evaluation mode")
+                                return
+
+                            results = []
+
+                            for idx, row in merged.iterrows():
+                                progress = (idx + 1) / len(merged)
+                                progress_bar.progress(progress)
+                                status_text.text(f"Evaluating question {idx + 1} of {len(merged)}...")
+
+                                result = evaluate_single(
+                                    client,
+                                    row['Ground Truth answer'],
+                                    row['RAG Answer'],
+                                    base_messages
+                                )
+
+                                if result:
+                                    results.append({
+                                        'Question Number': row['Question Number'],
+                                        'Question': row['Question'],
+                                        'Precision_Score': result['precision'],
+                                        'Precision_Reasoning': result['precision_reasoning'],
+                                        'RAG_Answer': row['RAG Answer'],
+                                        'Ground_Truth': row['Ground Truth answer']
+                                    })
+                                else:
+                                    results.append({
+                                        'Question Number': row['Question Number'],
+                                        'Question': row['Question'],
+                                        'Precision_Score': 'ERROR',
+                                        'Precision_Reasoning': 'Failed to evaluate',
+                                        'RAG_Answer': row['RAG Answer'],
+                                        'Ground_Truth': row['Ground Truth answer']
+                                    })
+
+                                time.sleep(0.5)  # Rate limiting
+
+                            progress_bar.progress(1.0)
+                            status_text.text("Evaluation complete!")
+
+                            # Display results
+                            results_df = pd.DataFrame(results)
+
+                            st.markdown("---")
+                            st.subheader("📈 Results")
+
+                            # Summary metrics
+                            valid_scores = [r['Precision_Score'] for r in results if r['Precision_Score'] != 'ERROR']
+                            if valid_scores:
+                                col1, col2, col3 = st.columns(3)
+                                col1.metric("Total Evaluated", len(valid_scores))
+                                col2.metric("Average Precision", f"{sum(valid_scores)/len(valid_scores):.2%}")
+                                col3.metric("Errors", len(results) - len(valid_scores))
+
+                            st.dataframe(results_df, use_container_width=True)
+
+                            # Download button
+                            csv = results_df.to_csv(index=False)
+                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            st.download_button(
+                                label="📥 Download Results CSV",
+                                data=csv,
+                                file_name=f"precision_scores_{timestamp}.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
+                    else:
+                        st.error("❌ No JSON files could be matched to questions. Check the matching threshold or file format.")
+
+            except Exception as e:
+                st.error(f"Error: {e}")
 
 
 if __name__ == "__main__":
