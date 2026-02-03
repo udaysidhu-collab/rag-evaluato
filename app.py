@@ -389,10 +389,10 @@ def main():
 
     # ===== TAB 1: Evaluation =====
     with tab1:
-        st.markdown("Upload your Questions CSV, Ground Truth CSV, and RAG JSON files to evaluate precision, recall, and accuracy.")
+        st.markdown("Upload your Questions CSV, Ground Truth CSV, and RAG answers to evaluate precision, recall, and accuracy.")
 
-        # File upload section
-        col1, col2, col3 = st.columns(3)
+        # File upload section - Questions and Ground Truth
+        col1, col2 = st.columns(2)
 
         with col1:
             st.subheader("Questions CSV")
@@ -404,17 +404,36 @@ def main():
             st.caption("Required columns: `Question Number`, `Ground Truth answer`")
             ground_truth_file = st.file_uploader("Upload Ground Truth", type=['csv'], key='gt')
 
-        with col3:
-            st.subheader("RAG JSON Files")
+        st.markdown("---")
+
+        # RAG Answer input method selection
+        st.subheader("RAG Answers")
+        rag_input_method = st.radio(
+            "Choose RAG answer input format:",
+            options=["JSON Files", "CSV File"],
+            horizontal=True,
+            help="Upload individual JSON files from your RAG system, or a single CSV with all answers"
+        )
+
+        json_files = None
+        rag_csv_file = None
+        threshold = 0.85
+
+        if rag_input_method == "JSON Files":
             st.caption("Upload JSON files from your RAG system")
             json_files = st.file_uploader("Upload JSON Files", type=['json'], key='json', accept_multiple_files=True)
+            # Similarity threshold slider (only for JSON)
+            threshold = st.slider("Matching Threshold", min_value=0.5, max_value=1.0, value=0.85, step=0.05,
+                                 help="Minimum similarity score for matching questions (85% recommended)")
+        else:
+            st.caption("Required columns: `Question Number`, `RAG Answer` (or similar)")
+            rag_csv_file = st.file_uploader("Upload RAG Answers CSV", type=['csv'], key='rag_csv')
 
-        # Similarity threshold slider
-        threshold = st.slider("Matching Threshold", min_value=0.5, max_value=1.0, value=0.85, step=0.05,
-                             help="Minimum similarity score for matching questions (85% recommended)")
+        # Check if we have all required files
+        has_rag_input = (rag_input_method == "JSON Files" and json_files) or (rag_input_method == "CSV File" and rag_csv_file)
 
         # Preview uploaded files
-        if questions_file and ground_truth_file and json_files:
+        if questions_file and ground_truth_file and has_rag_input:
             try:
                 q_df = pd.read_csv(questions_file)
                 gt_df = pd.read_csv(ground_truth_file)
@@ -430,8 +449,6 @@ def main():
                 with col2:
                     st.write(f"**Ground Truth:** {len(gt_df)} rows")
                     st.dataframe(gt_df.head(), use_container_width=True)
-
-                st.write(f"**JSON Files:** {len(json_files)} files uploaded")
 
                 # Flexible column detection
                 q_id_col = find_column(q_df.columns, 'id')
@@ -454,35 +471,72 @@ def main():
                     st.error(f"❌ Ground Truth CSV: Could not find ID or Ground Truth column. Found: {list(gt_df.columns)}")
 
                 if q_valid and gt_valid:
-                    # Convert JSON files to DataFrame
-                    st.markdown("---")
-                    st.subheader("🔄 JSON Conversion")
+                    # Process RAG answers based on input method
+                    rag_df = None
 
-                    with st.spinner("Converting JSON files..."):
-                        rag_df, failed, low_confidence = convert_json_files_to_df(
-                            json_files, q_df, threshold, id_col=q_id_col, q_col=q_text_col
-                        )
+                    if rag_input_method == "JSON Files":
+                        # Convert JSON files to DataFrame
+                        st.markdown("---")
+                        st.subheader("🔄 JSON Conversion")
+                        st.write(f"**JSON Files:** {len(json_files)} files uploaded")
 
-                    if len(rag_df) > 0:
-                        st.success(f"✅ Successfully matched {len(rag_df)} JSON files")
+                        with st.spinner("Converting JSON files..."):
+                            rag_df, failed, low_confidence = convert_json_files_to_df(
+                                json_files, q_df, threshold, id_col=q_id_col, q_col=q_text_col
+                            )
 
-                        if failed:
-                            with st.expander(f"⚠️ {len(failed)} files failed to match"):
-                                for f in failed:
-                                    st.write(f"- **{f['filename']}**: {f['reason']}")
+                        if len(rag_df) > 0:
+                            st.success(f"✅ Successfully matched {len(rag_df)} JSON files")
 
-                        if low_confidence:
-                            with st.expander(f"⚠️ {len(low_confidence)} matches with low confidence (<95%)"):
-                                for lc in low_confidence:
-                                    st.write(f"- **{lc['filename']}** → Q{lc['question_num']} ({lc['similarity']*100:.1f}%)")
+                            if failed:
+                                with st.expander(f"⚠️ {len(failed)} files failed to match"):
+                                    for f in failed:
+                                        st.write(f"- **{f['filename']}**: {f['reason']}")
 
-                        # Show converted RAG answers
-                        st.write("**Converted RAG Answers:**")
-                        st.dataframe(rag_df[['Question Number', 'RAG Answer', 'similarity']].head(), use_container_width=True)
+                            if low_confidence:
+                                with st.expander(f"⚠️ {len(low_confidence)} matches with low confidence (<95%)"):
+                                    for lc in low_confidence:
+                                        st.write(f"- **{lc['filename']}** → Q{lc['question_num']} ({lc['similarity']*100:.1f}%)")
 
+                            # Show converted RAG answers
+                            st.write("**Converted RAG Answers:**")
+                            st.dataframe(rag_df[['Question Number', 'RAG Answer', 'similarity']].head(), use_container_width=True)
+                        else:
+                            st.error("❌ No JSON files could be matched to questions. Check the matching threshold or file format.")
+
+                    else:
+                        # Load RAG answers from CSV
+                        st.markdown("---")
+                        st.subheader("📄 RAG Answers CSV")
+
+                        rag_csv_df = pd.read_csv(rag_csv_file)
+                        st.write(f"**RAG Answers:** {len(rag_csv_df)} rows")
+                        st.dataframe(rag_csv_df.head(), use_container_width=True)
+
+                        # Flexible column detection for RAG CSV
+                        rag_id_col = find_column(rag_csv_df.columns, 'id')
+                        rag_text_col = find_column(rag_csv_df.columns, 'rag_answer')
+
+                        if rag_id_col and rag_text_col:
+                            st.success(f"✅ RAG Answers: Using '{rag_id_col}' (ID), '{rag_text_col}' (Answer)")
+                            # Rename to standard columns
+                            rag_df = rag_csv_df[[rag_id_col, rag_text_col]].rename(
+                                columns={rag_id_col: 'Question Number', rag_text_col: 'RAG Answer'}
+                            )
+                            # Convert Question Number to string for matching
+                            rag_df['Question Number'] = rag_df['Question Number'].astype(str).str.strip()
+                        else:
+                            st.error(f"❌ RAG CSV: Could not find ID or Answer column. Found: {list(rag_csv_df.columns)}")
+
+                    # Continue if we have valid RAG data
+                    if rag_df is not None and len(rag_df) > 0:
                         # Rename columns for merging
                         q_df_renamed = q_df[[q_id_col, q_text_col]].rename(columns={q_id_col: 'Question Number', q_text_col: 'Question'})
                         gt_df_renamed = gt_df[[gt_id_col, gt_text_col]].rename(columns={gt_id_col: 'Question Number', gt_text_col: 'Ground Truth answer'})
+
+                        # Convert to string for matching
+                        q_df_renamed['Question Number'] = q_df_renamed['Question Number'].astype(str).str.strip()
+                        gt_df_renamed['Question Number'] = gt_df_renamed['Question Number'].astype(str).str.strip()
 
                         # Merge all data
                         merged = pd.merge(
@@ -627,8 +681,6 @@ def main():
                                 mime="text/csv",
                                 use_container_width=True
                             )
-                    else:
-                        st.error("❌ No JSON files could be matched to questions. Check the matching threshold or file format.")
 
             except Exception as e:
                 st.error(f"Error: {e}")
