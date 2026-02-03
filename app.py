@@ -118,8 +118,11 @@ PARTIAL_MATCH_KEYWORDS = {
 
 def find_column(columns, column_type):
     """Find a column matching the given type using flexible matching."""
-    if not columns:
+    if columns is None or len(columns) == 0:
         return None
+
+    # Convert to list if it's a pandas Index
+    columns = list(columns)
 
     variants = COLUMN_VARIANTS.get(column_type, [])
     keywords = PARTIAL_MATCH_KEYWORDS.get(column_type, [])
